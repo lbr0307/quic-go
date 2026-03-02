@@ -199,6 +199,11 @@ type ConnectionState struct {
 	// This is a unilateral declaration by the peer - receiving datagrams is only possible if
 	// datagram support was enabled locally via Config.EnableDatagrams.
 	SupportsDatagrams bool
+	// MaxDatagramPayloadSize is the maximum size of the data payload of a datagram message.
+	// It is derived from the peer's advertised MaxDatagramFrameSize transport parameter and
+	// the current path MTU, accounting for packet header and AEAD overhead.
+	// It is 0 if the peer does not support datagrams or if the handshake has not completed yet.
+	MaxDatagramPayloadSize int64
 	// SupportsStreamResetPartialDelivery indicates whether the peer advertised support for QUIC Stream Resets with Partial Delivery.
 	SupportsStreamResetPartialDelivery bool
 	// Used0RTT says if 0-RTT resumption was used.

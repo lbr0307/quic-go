@@ -770,6 +770,20 @@ func (c *Conn) supportsDatagrams() bool {
 	return c.peerParams.MaxDatagramFrameSize > 0
 }
 
+// datagramMaxPayloadSize returns the maximum data payload size of a DATAGRAM frame.
+// It must only be called from the connection's run loop (not goroutine-safe).
+func (c *Conn) datagramMaxPayloadSize() protocol.ByteCount {
+	if !c.supportsDatagrams() {
+		return 0
+	}
+	f := &wire.DatagramFrame{DataLenPresent: true}
+	maxPayloadFromMTU := estimateMaxPayloadSize(c.maxPacketSize())
+	return min(
+		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+		f.MaxDataLen(maxPayloadFromMTU, c.version),
+	)
+}
+
 // ConnectionState returns basic details about the QUIC connection.
 func (c *Conn) ConnectionState() ConnectionState {
 	c.connStateMutex.Lock()
@@ -2125,6 +2139,11 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 		if mtu := c.mtuDiscoverer.CurrentSize(); mtu > protocol.ByteCount(c.currentMTUEstimate.Load()) {
 			c.currentMTUEstimate.Store(uint32(mtu))
 			c.sentPacketHandler.SetMaxDatagramSize(mtu)
+			if c.supportsDatagrams() {
+				c.connStateMutex.Lock()
+				c.connState.MaxDatagramPayloadSize = int64(c.datagramMaxPayloadSize())
+				c.connStateMutex.Unlock()
+			}
 		}
 	}
 	return c.cryptoStreamHandler.SetLargest1RTTAcked(frame.LargestAcked())
@@ -2344,6 +2363,7 @@ func (c *Conn) restoreTransportParameters(params *wire.TransportParameters) {
 	c.streamsMap.HandleTransportParameters(params)
 	c.connStateMutex.Lock()
 	c.connState.SupportsDatagrams = c.supportsDatagrams()
+	c.connState.MaxDatagramPayloadSize = int64(c.datagramMaxPayloadSize())
 	c.connStateMutex.Unlock()
 }
 
@@ -2377,6 +2397,7 @@ func (c *Conn) handleTransportParameters(params *wire.TransportParameters) error
 
 	c.connStateMutex.Lock()
 	c.connState.SupportsDatagrams = c.supportsDatagrams()
+	c.connState.MaxDatagramPayloadSize = int64(c.datagramMaxPayloadSize())
 	c.connStateMutex.Unlock()
 	return nil
 }
@@ -3027,16 +3048,13 @@ func (c *Conn) SendDatagram(p []byte) error {
 		return errors.New("datagram support disabled")
 	}
 
-	f := &wire.DatagramFrame{DataLenPresent: true}
-	// The payload size estimate is conservative.
-	// Under many circumstances we could send a few more bytes.
-	maxDataLen := min(
-		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
-		protocol.ByteCount(c.currentMTUEstimate.Load()),
-	)
-	if protocol.ByteCount(len(p)) > maxDataLen {
-		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
+	c.connStateMutex.Lock()
+	maxDataLen := c.connState.MaxDatagramPayloadSize
+	c.connStateMutex.Unlock()
+	if protocol.ByteCount(len(p)) > protocol.ByteCount(maxDataLen) {
+		return &DatagramTooLargeError{MaxDatagramPayloadSize: maxDataLen}
 	}
+	f := &wire.DatagramFrame{DataLenPresent: true}
 	f.Data = make([]byte, len(p))
 	copy(f.Data, p)
 	return c.datagramQueue.Add(f)

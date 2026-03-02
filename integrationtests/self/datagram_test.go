@@ -124,6 +124,55 @@ func TestDatagramSizeLimit(t *testing.T) {
 	require.Equal(t, bytes.Repeat([]byte("b"), int(sizeErr.MaxDatagramPayloadSize)), datagram)
 }
 
+func TestDatagramMaxPayloadSizeInConnectionState(t *testing.T) {
+	// Use a small MaxDatagramSize so the peer's advertised limit is the binding constraint,
+	// ensuring the reported value is deterministic and testable.
+	const maxDatagramSize = 200
+	originalMaxDatagramSize := wire.MaxDatagramSize
+	wire.MaxDatagramSize = maxDatagramSize
+	t.Cleanup(func() { wire.MaxDatagramSize = originalMaxDatagramSize })
+
+	server, err := quic.Listen(
+		newUDPConnLocalhost(t),
+		getTLSConfig(),
+		getQuicConfig(&quic.Config{EnableDatagrams: true}),
+	)
+	require.NoError(t, err)
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	clientConn, err := quic.Dial(
+		ctx,
+		newUDPConnLocalhost(t),
+		server.Addr(),
+		getTLSClientConfig(),
+		getQuicConfig(&quic.Config{EnableDatagrams: true}),
+	)
+	require.NoError(t, err)
+	defer clientConn.CloseWithError(0, "")
+
+	serverConn, err := server.Accept(ctx)
+	require.NoError(t, err)
+	defer serverConn.CloseWithError(0, "")
+
+	clientMaxSize := clientConn.ConnectionState().MaxDatagramPayloadSize
+	serverMaxSize := serverConn.ConnectionState().MaxDatagramPayloadSize
+	require.Greater(t, clientMaxSize, int64(0))
+	require.Greater(t, serverMaxSize, int64(0))
+
+	// The reported size must match what SendDatagram allows.
+	payload := bytes.Repeat([]byte("a"), int(clientMaxSize))
+	require.NoError(t, clientConn.SendDatagram(payload))
+
+	received, err := serverConn.ReceiveDatagram(ctx)
+	require.NoError(t, err)
+	require.Equal(t, payload, received)
+
+	// One byte larger must be rejected.
+	require.Error(t, clientConn.SendDatagram(bytes.Repeat([]byte("b"), int(clientMaxSize+1))))
+}
+
 func TestDatagramLoss(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const rtt = 100 * time.Millisecond
