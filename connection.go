@@ -305,7 +305,7 @@ var newConnection = func(
 			RemoveConnectionID: runner.Remove,
 			ReplaceWithClosed:  runner.ReplaceWithClosed,
 		},
-		s.queueControlFrame,
+		func(f wire.Frame) { s.framer.QueueControlFrame(f) },
 		connIDGenerator,
 	)
 	s.preSetup()
@@ -434,7 +434,7 @@ var newClientConnection = func(
 			RemoveConnectionID: runner.Remove,
 			ReplaceWithClosed:  runner.ReplaceWithClosed,
 		},
-		s.queueControlFrame,
+		func(f wire.Frame) { s.framer.QueueControlFrame(f) },
 		connIDGenerator,
 	)
 	s.ctx, s.ctxCancel = context.WithCancelCause(ctx)
