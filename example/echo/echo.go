@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +22,13 @@ const message = "foobar"
 // We start a server echoing data on the first stream the client opens,
 // then connect with a client, send the message, and wait for its receipt.
 func main() {
+	serverOnly := flag.Bool("server", false, "run as a long-running echo server without the demo client")
+	flag.Parse()
+
+	if *serverOnly {
+		log.Fatal(echoServer())
+	}
+
 	go func() { log.Fatal(echoServer()) }()
 
 	if err := clientMain(); err != nil {
@@ -28,7 +36,7 @@ func main() {
 	}
 }
 
-// Start a server that echos all data on the first stream opened by the client
+// Start a server that echos all data on streams opened by clients
 func echoServer() error {
 	listener, err := quic.ListenAddr(addr, generateTLSConfig(), nil)
 	if err != nil {
@@ -36,20 +44,24 @@ func echoServer() error {
 	}
 	defer listener.Close()
 
-	conn, err := listener.Accept(context.Background())
-	if err != nil {
-		return err
+	for {
+		conn, err := listener.Accept(context.Background())
+		if err != nil {
+			return err
+		}
+		go func() {
+			stream, err := conn.AcceptStream(context.Background())
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			defer stream.Close()
+			// Echo through the loggingWriter
+			if _, err := io.Copy(loggingWriter{stream}, stream); err != nil {
+				log.Println(err)
+			}
+		}()
 	}
-
-	stream, err := conn.AcceptStream(context.Background())
-	if err != nil {
-		panic(err)
-	}
-	defer stream.Close()
-
-	// Echo through the loggingWriter
-	_, err = io.Copy(loggingWriter{stream}, stream)
-	return err
 }
 
 func clientMain() error {
