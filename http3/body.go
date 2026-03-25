@@ -102,14 +102,21 @@ type hijackableBody struct {
 	// either when Read() errors, or when Close() is called.
 	reqDone     chan<- struct{}
 	reqDoneOnce sync.Once
+
+	// ctx is the request context, used to return context errors
+	// (e.g. context.Canceled) instead of http3.Error when reading
+	// from the response body after context cancellation.
+	// It is nil for streams opened via OpenRequestStream.
+	ctx context.Context
 }
 
 var _ io.ReadCloser = &hijackableBody{}
 
-func newResponseBody(str *Stream, contentLength int64, done chan<- struct{}) *hijackableBody {
+func newResponseBody(str *Stream, contentLength int64, done chan<- struct{}, ctx context.Context) *hijackableBody {
 	return &hijackableBody{
 		body:    *newBody(str, contentLength),
 		reqDone: done,
+		ctx:     ctx,
 	}
 }
 
@@ -118,7 +125,11 @@ func (r *hijackableBody) Read(b []byte) (int, error) {
 	if err != nil {
 		r.requestDone()
 	}
-	return n, maybeReplaceError(err)
+	err = maybeReplaceError(err)
+	if err != nil && err != io.EOF && r.ctx != nil && r.ctx.Err() != nil {
+		err = r.ctx.Err()
+	}
+	return n, err
 }
 
 func (r *hijackableBody) requestDone() {

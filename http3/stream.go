@@ -169,6 +169,7 @@ type RequestStream struct {
 	requestWriter      *requestWriter
 	maxHeaderBytes     int
 	reqDone            chan<- struct{}
+	reqCtx             context.Context
 	disableCompression bool
 	response           *http.Response
 
@@ -181,6 +182,7 @@ func newRequestStream(
 	str *Stream,
 	requestWriter *requestWriter,
 	reqDone chan<- struct{},
+	reqCtx context.Context,
 	decoder *qpack.Decoder,
 	disableCompression bool,
 	maxHeaderBytes int,
@@ -190,6 +192,7 @@ func newRequestStream(
 		str:                str,
 		requestWriter:      requestWriter,
 		reqDone:            reqDone,
+		reqCtx:             reqCtx,
 		decoder:            decoder,
 		disableCompression: disableCompression,
 		maxHeaderBytes:     maxHeaderBytes,
@@ -368,7 +371,7 @@ func (s *RequestStream) ReadResponse() (*http.Response, error) {
 
 	// Check that the server doesn't send more data in DATA frames than indicated by the Content-Length header (if set).
 	// See section 4.1.2 of RFC 9114.
-	respBody := newResponseBody(s.str, res.ContentLength, s.reqDone)
+	respBody := newResponseBody(s.str, res.ContentLength, s.reqDone, s.reqCtx)
 
 	// Rules for when to set Content-Length are defined in https://tools.ietf.org/html/rfc7230#section-3.3.2.
 	isInformational := res.StatusCode >= 100 && res.StatusCode < 200

@@ -191,6 +191,7 @@ func TestRequestStream(t *testing.T) {
 		),
 		requestWriter,
 		make(chan struct{}),
+		nil,
 		qpack.NewDecoder(),
 		true,
 		math.MaxInt,

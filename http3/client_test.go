@@ -575,6 +575,51 @@ func TestClientRequestCancellation(t *testing.T) {
 	expectStreamWriteReset(t, str, quic.StreamErrorCode(ErrCodeRequestCanceled))
 }
 
+func TestClientRequestContextCancellationDuringBodyRead(t *testing.T) {
+	clientConn, serverConn := newConnPair(t)
+
+	requestCtx, requestCancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "http://quic-go.net", nil)
+	require.NoError(t, err)
+
+	type result struct {
+		rsp *http.Response
+		err error
+	}
+	resultChan := make(chan result)
+	go func() {
+		cc := (&Transport{}).NewClientConn(clientConn)
+		rsp, err := cc.RoundTrip(req)
+		resultChan <- result{rsp: rsp, err: err}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	str, err := serverConn.AcceptStream(ctx)
+	require.NoError(t, err)
+
+	// send response headers (but don't send body data yet)
+	_, err = str.Write(encodeResponse(t, http.StatusOK))
+	require.NoError(t, err)
+
+	var rsp *http.Response
+	select {
+	case res := <-resultChan:
+		require.NoError(t, res.err)
+		rsp = res.rsp
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+
+	// cancel the request context while the body is readable
+	requestCancel()
+
+	// reading the response body should return context.Canceled
+	_, err = rsp.Body.Read(make([]byte, 1024))
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestClientConnGoAway(t *testing.T) {
 	t.Run("no active streams", func(t *testing.T) {
 		testClientConnGoAway(t, false)

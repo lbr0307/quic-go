@@ -2,6 +2,7 @@ package http3
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ func TestResponseBodyReading(t *testing.T) {
 		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
 		-1,
 		reqDone,
+		nil,
 	)
 
 	data, err := io.ReadAll(rb)
@@ -42,6 +44,7 @@ func TestResponseBodyReadError(t *testing.T) {
 		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
 		-1,
 		reqDone,
+		nil,
 	)
 
 	_, err := rb.Read([]byte{0})
@@ -66,6 +69,7 @@ func TestResponseBodyClose(t *testing.T) {
 		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
 		-1,
 		reqDone,
+		nil,
 	)
 	require.NoError(t, rb.Close())
 	select {
@@ -88,6 +92,7 @@ func TestResponseBodyConcurrentClose(t *testing.T) {
 		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
 		-1,
 		reqDone,
+		nil,
 	)
 
 	for range 3 {
@@ -129,6 +134,7 @@ func testResponseBodyLengthLimiting(t *testing.T, alongFrameBoundary bool) {
 		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
 		l,
 		make(chan struct{}),
+		nil,
 	)
 	data, err := io.ReadAll(rb)
 	require.Equal(t, []byte("foobar")[:l], data)
@@ -137,4 +143,87 @@ func testResponseBodyLengthLimiting(t *testing.T, alongFrameBoundary bool) {
 	n, err := rb.Read([]byte{0})
 	require.Zero(t, n)
 	require.ErrorIs(t, err, errTooMuchData)
+}
+
+func TestResponseBodyContextCancellation(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	str := NewMockDatagramStream(mockCtrl)
+	str.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	str.EXPECT().Read(gomock.Any()).Return(0, &quic.StreamError{
+		StreamID:  42,
+		ErrorCode: quic.StreamErrorCode(ErrCodeRequestCanceled),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rb := newResponseBody(
+		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
+		-1,
+		make(chan struct{}),
+		ctx,
+	)
+
+	_, err := rb.Read([]byte{0})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestResponseBodyContextDeadlineExceeded(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	str := NewMockDatagramStream(mockCtrl)
+	str.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	str.EXPECT().Read(gomock.Any()).Return(0, &quic.StreamError{
+		StreamID:  42,
+		ErrorCode: quic.StreamErrorCode(ErrCodeRequestCanceled),
+	})
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	rb := newResponseBody(
+		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
+		-1,
+		make(chan struct{}),
+		ctx,
+	)
+
+	_, err := rb.Read([]byte{0})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestResponseBodyContextCancelledEOFPreserved(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	var buf bytes.Buffer
+	buf.Write(getDataFrame([]byte("foobar")))
+	str := NewMockDatagramStream(mockCtrl)
+	str.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	str.EXPECT().Read(gomock.Any()).DoAndReturn(buf.Read).AnyTimes()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rb := newResponseBody(
+		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
+		-1,
+		make(chan struct{}),
+		ctx,
+	)
+
+	data, err := io.ReadAll(rb)
+	require.NoError(t, err)
+	require.Equal(t, []byte("foobar"), data)
+}
+
+func TestResponseBodyNilContext(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	str := NewMockDatagramStream(mockCtrl)
+	str.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	str.EXPECT().Read(gomock.Any()).Return(0, &quic.StreamError{
+		StreamID:  42,
+		ErrorCode: quic.StreamErrorCode(ErrCodeRequestCanceled),
+	})
+	rb := newResponseBody(
+		newStream(str, nil, nil, func(io.Reader, *headersFrame) error { return nil }, nil),
+		-1,
+		make(chan struct{}),
+		nil,
+	)
+
+	_, err := rb.Read([]byte{0})
+	var h3Err *Error
+	require.ErrorAs(t, err, &h3Err)
 }

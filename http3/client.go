@@ -136,13 +136,14 @@ func newClientConn(
 
 // OpenRequestStream opens a new request stream on the HTTP/3 connection.
 func (c *ClientConn) OpenRequestStream(ctx context.Context) (*RequestStream, error) {
-	return c.openRequestStream(ctx, c.requestWriter, nil, c.disableCompression, c.maxResponseHeaderBytes)
+	return c.openRequestStream(ctx, c.requestWriter, nil, nil, c.disableCompression, c.maxResponseHeaderBytes)
 }
 
 func (c *ClientConn) openRequestStream(
 	ctx context.Context,
 	requestWriter *requestWriter,
 	reqDone chan<- struct{},
+	reqCtx context.Context,
 	disableCompression bool,
 	maxHeaderBytes int,
 ) (*RequestStream, error) {
@@ -197,6 +198,7 @@ func (c *ClientConn) openRequestStream(
 		}, c.qlogger),
 		requestWriter,
 		reqDone,
+		reqCtx,
 		c.decoder,
 		disableCompression,
 		maxHeaderBytes,
@@ -313,6 +315,7 @@ func (c *ClientConn) roundTrip(req *http.Request) (*http.Response, error) {
 		req.Context(),
 		c.requestWriter,
 		reqDone,
+		req.Context(),
 		c.disableCompression,
 		c.maxResponseHeaderBytes,
 	)
